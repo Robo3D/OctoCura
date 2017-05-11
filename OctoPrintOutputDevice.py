@@ -103,6 +103,10 @@ class OctoPrintOutputDevice(PrinterOutputDevice):
         self._recreate_network_manager_time = 30 # If we have no connection, re-create network manager every 30 sec.
         self._recreate_network_manager_count = 1
 
+        self._preheat_timer = QTimer()
+        self._preheat_timer.setSingleShot(True)
+        self._preheat_timer.timeout.connect(self.cancelPreheatBed)
+
     def getProperties(self):
         return self._properties
 
@@ -323,12 +327,14 @@ class OctoPrintOutputDevice(PrinterOutputDevice):
             command = "pause"
 
         if command:
-            self._sendCommand(command)
+            self._sendJobCommand(command)
 
     def startPrint(self):
         global_container_stack = Application.getInstance().getGlobalContainerStack()
         if not global_container_stack:
             return
+
+        self._preheat_timer.stop()
 
         self._auto_print = parseBool(global_container_stack.getMetaDataEntry("octoprint_auto_print", True))
         if self._auto_print:
@@ -352,7 +358,10 @@ class OctoPrintOutputDevice(PrinterOutputDevice):
                     QCoreApplication.processEvents()
                     last_process_events = time()
 
-            file_name = "%s.gcode" % Application.getInstance().getPrintInformation().jobName
+            job_name = Application.getInstance().getPrintInformation().jobName.strip()
+            if job_name is "":
+                job_name = "untitled_print"
+            file_name = "%s.gcode" % job_name
 
             ##  Create multi_part request
             self._post_multi_part = QHttpMultiPart(QHttpMultiPart.FormDataType)
@@ -399,14 +408,43 @@ class OctoPrintOutputDevice(PrinterOutputDevice):
             Logger.log("e", "An exception occurred in network connection: %s" % str(e))
 
     def _sendCommand(self, command):
-        url = QUrl(self._api_url + "job")
+        self._sendCommandToApi("printer/command", command)
+        Logger.log("d", "Sent gcode command to OctoPrint instance: %s", command)
+
+    def _sendJobCommand(self, command):
+        self._sendCommandToApi("job", command)
+        Logger.log("d", "Sent job command to OctoPrint instance: %s", command)
+
+    def _sendCommandToApi(self, endpoint, command):
+        url = QUrl(self._api_url + endpoint)
         self._command_request = QNetworkRequest(url)
         self._command_request.setRawHeader(self._api_header.encode(), self._api_key.encode())
         self._command_request.setHeader(QNetworkRequest.ContentTypeHeader, "application/json")
 
         data = "{\"command\": \"%s\"}" % command
         self._command_reply = self._manager.post(self._command_request, data.encode())
-        Logger.log("d", "Sent command to OctoPrint instance: %s", data)
+
+    ##  Pre-heats the heated bed of the printer.
+    #
+    #   \param temperature The temperature to heat the bed to, in degrees
+    #   Celsius.
+    #   \param duration How long the bed should stay warm, in seconds.
+    @pyqtSlot(float, float)
+    def preheatBed(self, temperature, duration):
+        self._setTargetBedTemperature(temperature)
+        if duration > 0:
+            self._preheat_timer.setInterval(duration * 1000)
+            self._preheat_timer.start()
+        else:
+            self._preheat_timer.stop()
+
+    ##  Cancels pre-heating the heated bed of the printer.
+    #
+    #   If the bed is not pre-heated, nothing happens.
+    @pyqtSlot()
+    def cancelPreheatBed(self):
+        self._setTargetBedTemperature(0)
+        self._preheat_timer.stop()
 
     def _setTargetBedTemperature(self, temperature):
         Logger.log("d", "Setting bed temperature to %s", temperature)
