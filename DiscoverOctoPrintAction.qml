@@ -24,7 +24,7 @@ Cura.MachineAction
         {
             id: pageTitle
             width: parent.width
-            text: catalog.i18nc("@title", "Connect to OctoPrint")
+            text: catalog.i18nc("@title", "Connect to your Robo")
             wrapMode: Text.WordWrap
             font.pointSize: 18
         }
@@ -34,7 +34,7 @@ Cura.MachineAction
             id: pageDescription
             width: parent.width
             wrapMode: Text.WordWrap
-            text: catalog.i18nc("@label", "Select your OctoPrint instance from the list below:")
+            text: catalog.i18nc("@label", "Select your Robo printer from the list below:")
         }
 
         Row
@@ -207,7 +207,7 @@ Cura.MachineAction
                 Label
                 {
                     visible: base.selectedInstance != null
-                    text: catalog.i18nc("@label", "Please enter the API key to access OctoPrint above. You can get the OctoPrint API key through the OctoPrint web page.")
+                    text: catalog.i18nc("@label", "Please enter the Octoprint API key to access your Robo above. You can get the OctoPrint API key through the printer's web dashboard.")
                     width: parent.width - UM.Theme.getSize("default_margin").width
                     wrapMode: Text.WordWrap
                 }
@@ -304,7 +304,7 @@ Cura.MachineAction
         property alias portText: portField.text
         property alias pathText: pathField.text
 
-        title: catalog.i18nc("@title:window", "Manually added OctoPrint instance")
+        title: catalog.i18nc("@title:window", "Manually added Robo printer")
 
         minimumWidth: 400 * Screen.devicePixelRatio
         minimumHeight: 140 * Screen.devicePixelRatio

@@ -18,7 +18,7 @@ catalog = i18nCatalog("cura")
 
 class DiscoverOctoPrintAction(MachineAction):
     def __init__(self, parent = None):
-        super().__init__("DiscoverOctoPrintAction", catalog.i18nc("@action", "Send to printer"))
+        super().__init__("DiscoverOctoPrintAction", catalog.i18nc("@action", "Connection Settings"))
 
         self._qml_url = "DiscoverOctoPrintAction.qml"
         self._window = None

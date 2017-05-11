@@ -9,10 +9,10 @@ def getMetaData():
     return {
         "type": "extension",
         "plugin": {
-            "name": "OctoPrint connection",
-            "author": "fieldOfView",
+            "name": "OctoPrint Connection",
+            "author": "robo",
             "version": "2.4",
-            "description": catalog.i18nc("@info:whatsthis", "Allows sending prints to OctoPrint and monitoring the progress"),
+            "description": catalog.i18nc("@info:whatsthis", "Allows sending prints to your Robo printer and monitoring the progress"),
             "api": 3
         }
     }
