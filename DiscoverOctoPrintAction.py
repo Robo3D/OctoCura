@@ -17,7 +17,7 @@ catalog = i18nCatalog("cura")
 
 class DiscoverOctoPrintAction(MachineAction):
     def __init__(self, parent = None):
-        super().__init__("DiscoverOctoPrintAction", catalog.i18nc("@action", "Connect OctoPrint"))
+        super().__init__("DiscoverOctoPrintAction", catalog.i18nc("@action", "Connection Settings"))
 
         self._qml_url = "DiscoverOctoPrintAction.qml"
         self._window = None
@@ -139,7 +139,7 @@ class DiscoverOctoPrintAction(MachineAction):
         QDesktopServices.openUrl(QUrl(url))
 
     def _createAdditionalComponentsView(self):
-        Logger.log("d", "Creating additional ui components for OctoPrint-connected printers.")
+        Logger.log("d", "Creating additional interface components for OctoPrint-connected printers.")
 
         path = QUrl.fromLocalFile(os.path.join(PluginRegistry.getInstance().getPluginPath("OctoPrintPlugin"), "OctoPrintComponents.qml"))
         self._additional_component = QQmlComponent(Application.getInstance()._engine, path)
