@@ -4,8 +4,7 @@ from UM.Settings.DefinitionContainer import DefinitionContainer
 from UM.Application import Application
 from UM.PluginRegistry import PluginRegistry
 
-import cura.Settings.CuraContainerRegistry
-import UM.Settings.ContainerRegistry
+from UM.Settings.ContainerRegistry import ContainerRegistry
 from cura.MachineAction import MachineAction
 
 from PyQt5.QtCore import pyqtSignal, pyqtProperty, pyqtSlot, QUrl, QObject
@@ -18,7 +17,7 @@ catalog = i18nCatalog("cura")
 
 class DiscoverOctoPrintAction(MachineAction):
     def __init__(self, parent = None):
-        super().__init__("DiscoverOctoPrintAction", catalog.i18nc("@action", "Send to printer"))
+        super().__init__("DiscoverOctoPrintAction", catalog.i18nc("@action", "Connect OctoPrint"))
 
         self._qml_url = "DiscoverOctoPrintAction.qml"
         self._window = None
@@ -26,8 +25,7 @@ class DiscoverOctoPrintAction(MachineAction):
 
         self._network_plugin = None
 
-        cura.Settings.CuraContainerRegistry.getInstance().containerAdded.connect(self._onContainerAdded)
-
+        ContainerRegistry.getInstance().containerAdded.connect(self._onContainerAdded)
         Application.getInstance().engineCreatedSignal.connect(self._createAdditionalComponentsView)
 
     instancesChanged = pyqtSignal()
@@ -54,12 +52,12 @@ class DiscoverOctoPrintAction(MachineAction):
 
         self._network_plugin.removeManualInstance(name)
 
-    @pyqtSlot(str, str, int, str)
-    def setManualInstance(self, name, address, port, path):
+    @pyqtSlot(str, str, int, str, bool)
+    def setManualInstance(self, name, address, port, path, useHttps):
         # This manual printer could replace a current manual printer
         self._network_plugin.removeManualInstance(name)
 
-        self._network_plugin.addManualInstance(name, address, port, path)
+        self._network_plugin.addManualInstance(name, address, port, path, useHttps)
 
     def _onContainerAdded(self, container):
         # Add this action as a supported action to all machine definitions
@@ -125,7 +123,7 @@ class DiscoverOctoPrintAction(MachineAction):
 
     @pyqtSlot(str, str, str)
     def setContainerMetaDataEntry(self, container_id, key, value):
-        containers = UM.Settings.ContainerRegistry.getInstance().findContainers(None, id = container_id)
+        containers = ContainerRegistry.getInstance().findContainers(None, id = container_id)
         if not containers:
             UM.Logger.log("w", "Could not set metadata of container %s because it was not found.", container_id)
             return False
@@ -141,7 +139,7 @@ class DiscoverOctoPrintAction(MachineAction):
         QDesktopServices.openUrl(QUrl(url))
 
     def _createAdditionalComponentsView(self):
-        Logger.log("d", "Creating additional interface components for OctoPrint-connected printers.")
+        Logger.log("d", "Creating additional ui components for OctoPrint-connected printers.")
 
         path = QUrl.fromLocalFile(os.path.join(PluginRegistry.getInstance().getPluginPath("OctoPrintPlugin"), "OctoPrintComponents.qml"))
         self._additional_component = QQmlComponent(Application.getInstance()._engine, path)

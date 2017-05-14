@@ -25,14 +25,16 @@ class OctoPrintOutputDevice(PrinterOutputDevice):
 
         self._address = address
         self._port = port
-        self._path = properties["path"] if "path" in properties else "/"
+        self._path = properties.get(b"path", b"/").decode("utf-8")
+        if self._path[-1:] != "/":
+            self._path += "/"
         self._key = key
         self._properties = properties  # Properties dict as provided by zero conf
 
         self._gcode = None
         self._auto_print = True
 
-        ##  Todo: Hardcoded value now; we should probably read this from the machine definition and octoprint.
+        ##  We start with a single extruder, but update this when we get data from octoprint
         self._num_extruders_set = False
         self._num_extruders = 1
 
@@ -41,9 +43,10 @@ class OctoPrintOutputDevice(PrinterOutputDevice):
         self._api_header = "X-Api-Key"
         self._api_key = None
 
-        self._base_url = "http://%s:%d%s" % (self._address, self._port, self._path)
+        protocol = "https" if properties.get(b'useHttps') == b"true" else "http"
+        self._base_url = "%s://%s:%d%s" % (protocol, self._address, self._port, self._path)
         self._api_url = self._base_url + self._api_prefix
-        self._camera_url = "http://%s:8080/?action=snapshot" % self._address
+        self._camera_url = "%s://%s:8080/?action=stream" % (protocol, self._address)
 
         self.setPriority(2) # Make sure the output device gets selected above local file output
         self.setName(key)
@@ -66,6 +69,8 @@ class OctoPrintOutputDevice(PrinterOutputDevice):
 
         self._image_request = None
         self._image_reply = None
+        self._stream_buffer = b""
+        self._stream_buffer_start_index = -1
 
         self._post_request = None
         self._post_reply = None
@@ -87,13 +92,7 @@ class OctoPrintOutputDevice(PrinterOutputDevice):
         self._update_timer.setSingleShot(False)
         self._update_timer.timeout.connect(self._update)
 
-        self._camera_timer = QTimer()
-        self._camera_timer.setInterval(500)  # Todo: Add preference for camera update interval
-        self._camera_timer.setSingleShot(False)
-        self._camera_timer.timeout.connect(self._update_camera)
-
         self._camera_image_id = 0
-
         self._camera_image = QImage()
 
         self._connection_state_before_timeout = None
@@ -103,6 +102,10 @@ class OctoPrintOutputDevice(PrinterOutputDevice):
         self._response_timeout_time = 5
         self._recreate_network_manager_time = 30 # If we have no connection, re-create network manager every 30 sec.
         self._recreate_network_manager_count = 1
+
+        self._preheat_timer = QTimer()
+        self._preheat_timer.setSingleShot(True)
+        self._preheat_timer.timeout.connect(self.cancelPreheatBed)
 
     def getProperties(self):
         return self._properties
@@ -155,11 +158,29 @@ class OctoPrintOutputDevice(PrinterOutputDevice):
     def baseURL(self):
         return self._base_url
 
-    def _update_camera(self):
-        ## Request new image
+    def _startCamera(self):
+        global_container_stack = Application.getInstance().getGlobalContainerStack()
+        if not global_container_stack or not parseBool(global_container_stack.getMetaDataEntry("octoprint_show_camera", False)):
+            return
+
+        # Start streaming mjpg stream
         url = QUrl(self._camera_url)
         self._image_request = QNetworkRequest(url)
         self._image_reply = self._manager.get(self._image_request)
+        self._image_reply.downloadProgress.connect(self._onStreamDownloadProgress)
+
+    def _stopCamera(self):
+        if self._image_reply:
+            self._image_reply.abort()
+            self._image_reply.downloadProgress.disconnect(self._onStreamDownloadProgress)
+            self._image_reply = None
+        self._image_request = None
+
+        self._stream_buffer = b""
+        self._stream_buffer_start_index = -1
+
+        self._camera_image = QImage()
+        self.newImage.emit()
 
     def _update(self):
         if self._last_response_time:
@@ -250,11 +271,10 @@ class OctoPrintOutputDevice(PrinterOutputDevice):
         if self._error_message:
             self._error_message.hide()
         self._update_timer.stop()
-        self._camera_timer.stop()
-        self._camera_image = QImage()
-        self.newImage.emit()
 
-    def requestWrite(self, node, file_name = None, filter_by_machine = False):
+        self._stopCamera()
+
+    def requestWrite(self, node, file_name = None, filter_by_machine = False, file_handler = None):
         self.writeStarted.emit(self)
         self._gcode = getattr(Application.getInstance().getController().getScene(), "gcode_list")
 
@@ -265,26 +285,12 @@ class OctoPrintOutputDevice(PrinterOutputDevice):
 
     ##  Start requesting data from the instance
     def connect(self):
-        #self.close()  # Ensure that previous connection (if any) is killed.
-        global_container_stack = Application.getInstance().getGlobalContainerStack()
-        if not global_container_stack:
-            return
-
         self._createNetworkManager()
 
         self.setConnectionState(ConnectionState.connecting)
         self._update()  # Manually trigger the first update, as we don't want to wait a few secs before it starts.
-
-        Logger.log("d", "Connection with instance %s with ip %s started", self._key, self._address)
+        Logger.log("d", "Connection with instance %s with url %s started", self._key, self._base_url)
         self._update_timer.start()
-
-        if parseBool(global_container_stack.getMetaDataEntry("octoprint_show_camera", False)):
-            self._update_camera()
-            self._camera_timer.start()
-        else:
-            self._camera_timer.stop()
-            self._camera_image = QImage()
-            self.newImage.emit()
 
         self._last_response_time = None
         self.setAcceptsCommands(False)
@@ -292,7 +298,7 @@ class OctoPrintOutputDevice(PrinterOutputDevice):
 
     ##  Stop requesting data from the instance
     def disconnect(self):
-        Logger.log("d", "Connection with instance %s with ip %s stopped", self._key, self._address)
+        Logger.log("d", "Connection with instance %s with url %s stopped", self._key, self._base_url)
         self.close()
 
     newImage = pyqtSignal()
@@ -321,12 +327,14 @@ class OctoPrintOutputDevice(PrinterOutputDevice):
             command = "pause"
 
         if command:
-            self._sendCommand(command)
+            self._sendJobCommand(command)
 
     def startPrint(self):
         global_container_stack = Application.getInstance().getGlobalContainerStack()
         if not global_container_stack:
             return
+
+        self._preheat_timer.stop()
 
         self._auto_print = parseBool(global_container_stack.getMetaDataEntry("octoprint_auto_print", True))
         if self._auto_print:
@@ -350,7 +358,10 @@ class OctoPrintOutputDevice(PrinterOutputDevice):
                     QCoreApplication.processEvents()
                     last_process_events = time()
 
-            file_name = "%s.gcode" % Application.getInstance().getPrintInformation().jobName
+            job_name = Application.getInstance().getPrintInformation().jobName.strip()
+            if job_name is "":
+                job_name = "untitled_print"
+            file_name = "%s.gcode" % job_name
 
             ##  Create multi_part request
             self._post_multi_part = QHttpMultiPart(QHttpMultiPart.FormDataType)
@@ -397,14 +408,43 @@ class OctoPrintOutputDevice(PrinterOutputDevice):
             Logger.log("e", "An exception occurred in network connection: %s" % str(e))
 
     def _sendCommand(self, command):
-        url = QUrl(self._api_url + "job")
+        self._sendCommandToApi("printer/command", command)
+        Logger.log("d", "Sent gcode command to OctoPrint instance: %s", command)
+
+    def _sendJobCommand(self, command):
+        self._sendCommandToApi("job", command)
+        Logger.log("d", "Sent job command to OctoPrint instance: %s", command)
+
+    def _sendCommandToApi(self, endpoint, command):
+        url = QUrl(self._api_url + endpoint)
         self._command_request = QNetworkRequest(url)
         self._command_request.setRawHeader(self._api_header.encode(), self._api_key.encode())
         self._command_request.setHeader(QNetworkRequest.ContentTypeHeader, "application/json")
 
         data = "{\"command\": \"%s\"}" % command
         self._command_reply = self._manager.post(self._command_request, data.encode())
-        Logger.log("d", "Sent command to OctoPrint instance: %s", data)
+
+    ##  Pre-heats the heated bed of the printer.
+    #
+    #   \param temperature The temperature to heat the bed to, in degrees
+    #   Celsius.
+    #   \param duration How long the bed should stay warm, in seconds.
+    @pyqtSlot(float, float)
+    def preheatBed(self, temperature, duration):
+        self._setTargetBedTemperature(temperature)
+        if duration > 0:
+            self._preheat_timer.setInterval(duration * 1000)
+            self._preheat_timer.start()
+        else:
+            self._preheat_timer.stop()
+
+    ##  Cancels pre-heating the heated bed of the printer.
+    #
+    #   If the bed is not pre-heated, nothing happens.
+    @pyqtSlot()
+    def cancelPreheatBed(self):
+        self._setTargetBedTemperature(0)
+        self._preheat_timer.stop()
 
     def _setTargetBedTemperature(self, temperature):
         Logger.log("d", "Setting bed temperature to %s", temperature)
@@ -483,10 +523,10 @@ class OctoPrintOutputDevice(PrinterOutputDevice):
 
                     # Check for hotend temperatures
                     for index in range(0, self._num_extruders):
-                        temperature = json_data["temperature"]["tool%d" % index]["actual"]
+                        temperature = json_data["temperature"]["tool%d" % index]["actual"] if ("tool%d" % index) in json_data["temperature"] else 0
                         self._setHotendTemperature(index, temperature)
 
-                    bed_temperature = json_data["temperature"]["bed"]["actual"]
+                    bed_temperature = json_data["temperature"]["bed"]["actual"] if "bed" in json_data["temperature"] else 0
                     self._setBedTemperature(bed_temperature)
 
                     job_state = "offline"
@@ -502,8 +542,15 @@ class OctoPrintOutputDevice(PrinterOutputDevice):
                 elif http_status_code == 401:
                     self.setAcceptsCommands(False)
                     self.setConnectionText(i18n_catalog.i18nc("@info:status", "OctoPrint on {0} does not allow access to print").format(self._key))
+                elif http_status_code == 409:
+                    if self._connection_state == ConnectionState.connecting:
+                        self.setConnectionState(ConnectionState.connected)
+
+                    self.setAcceptsCommands(False)
+                    self.setConnectionText(i18n_catalog.i18nc("@info:status", "The printer connected to OctoPrint on {0} is not operational").format(self._key))
                 else:
-                    pass  # TODO: Handle errors
+                    self.setAcceptsCommands(False)
+                    Logger.log("w", "Received an unexpected returncode: %d", http_status_code)
 
             elif "job" in reply.url().toString():  # Status update from /job:
                 if http_status_code == 200:
@@ -527,13 +574,6 @@ class OctoPrintOutputDevice(PrinterOutputDevice):
                         self.setTimeElapsed(0)
                         self.setTimeTotal(0)
                     self.setJobName(json_data["job"]["file"]["name"])
-                else:
-                    pass  # TODO: Handle errors
-
-            elif "snapshot" in reply.url().toString():  # Update from camera:
-                if http_status_code == 200:
-                    self._camera_image.loadFromData(reply.readAll())
-                    self.newImage.emit()
                 else:
                     pass  # TODO: Handle errors
 
@@ -567,6 +607,21 @@ class OctoPrintOutputDevice(PrinterOutputDevice):
 
         else:
             Logger.log("d", "OctoPrintOutputDevice got an unhandled operation %s", reply.operation())
+
+    def _onStreamDownloadProgress(self, bytes_received, bytes_total):
+        self._stream_buffer += self._image_reply.readAll()
+
+        if self._stream_buffer_start_index == -1:
+            self._stream_buffer_start_index = self._stream_buffer.indexOf(b'\xff\xd8')
+        stream_buffer_end_index = self._stream_buffer.lastIndexOf(b'\xff\xd9')
+
+        if self._stream_buffer_start_index != -1 and stream_buffer_end_index != -1:
+            jpg_data = self._stream_buffer[self._stream_buffer_start_index:stream_buffer_end_index + 2]
+            self._stream_buffer = self._stream_buffer[stream_buffer_end_index + 2:]
+            self._stream_buffer_start_index = -1
+
+            self._camera_image.loadFromData(jpg_data)
+            self.newImage.emit()
 
     def _onUploadProgress(self, bytes_sent, bytes_total):
         if bytes_total > 0:
